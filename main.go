@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"path"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	// "syscall"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/skip2/go-qrcode"
 	// "github.com/zserge/lorca"
 )
 
@@ -28,6 +30,10 @@ import (
 var FS embed.FS
 
 func main() {
+
+	//端口号
+	port_num := "27149"
+
 	//gin 协程
 	go func() {
 		gin.SetMode(gin.DebugMode)
@@ -44,7 +50,11 @@ func main() {
 		router.StaticFS("/static", http.FS(staticFiles))
 
 		//API Routing configuration
-		router.POST("/api/v1/texts", TextsController)
+		router.POST("/api/v1/texts", TextsController)        //文本获取
+		router.GET("/api/v1/addresses", AddressesController) //地址获取
+		router.GET("uploads/:path", UploadsController)       //上传地址
+		router.GET("/api/v1/qrcodes", QrcodesController)     //QR Code 生成
+		router.POST("/api/v1/files", FilesController)
 
 		//静态资源访问失败处理
 		router.NoRoute(func(c *gin.Context) {
@@ -66,11 +76,11 @@ func main() {
 		})
 
 		//Gin port
-		router.Run(":8080")
+		router.Run(":" + port_num)
 	}()
 
 	EdgePath := "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
-	cmd := exec.Command(EdgePath, "--app=http:127.0.0.1:8080/static/index.html")
+	cmd := exec.Command(EdgePath, "--app=http:127.0.0.1:"+port_num+"/static/index.html")
 	cmd.Start()
 	chSignal := make(chan os.Signal, 1)
 	signal.Notify(chSignal, os.Interrupt)
@@ -112,8 +122,57 @@ func TextsController(c *gin.Context) {
 
 }
 
+func AddressesController(c *gin.Context) {
+	addrs, _ := net.InterfaceAddrs()
+	var result []string
+	for _, address := range addrs {
+		// check the address type and if it is not a loopback the display it
+		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				result = append(result, ipnet.IP.String())
+			}
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"addresses": result})
+}
+
+func GetUploadsDir() (uploads string) {
+	exe, err := os.Executable()
+	if err != nil {
+		log.Fatal(err)
+	}
+	dir := filepath.Dir(exe)
+	uploads = filepath.Join(dir, "uploads")
+	return
+}
+
+func UploadsController(c *gin.Context) {
+	if path := c.Param("path"); path != "" {
+		target := filepath.Join(GetUploadsDir(), path)
+		c.Header("Content-Description", "File Transfer")
+		c.Header("Content-Transfer-Encoding", "binary")
+		c.Header("Content-Disposition", "attachment; filename="+path)
+		c.Header("Content-Type", "application/octet-stream")
+		c.File(target)
+	} else {
+		c.Status(http.StatusNotFound)
+	}
+}
+
+func QrcodesController(c *gin.Context) {
+	if content := c.Query("content"); content != "" {
+		png, err := qrcode.Encode(content, qrcode.Medium, 256)
+		if err != nil {
+			log.Fatal(err)
+		}
+		c.Data(http.StatusOK, "image/png", png)
+	} else {
+		c.Status(http.StatusBadRequest)
+	}
+}
+
 func FilesController(c *gin.Context) {
-	file, err := c.FormFile("raw")
+	file, err := c.FormFile("raw") //raw 源于前端参数
 	if err != nil {
 		log.Fatal(err)
 	}
